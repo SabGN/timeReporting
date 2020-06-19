@@ -1,145 +1,147 @@
 """Main module."""
-import json
-import os
+import cProfile
 import calendar
-import pygsheets
-from clockifyclient.client import APISession
-from clockifyclient.api import APIServer
+import io
+import pstats
 from datetime import *
-from dateutil import tz
+import pygsheets
+from pygsheets import DataRange
+from loguru import logger  # https://gspread.readthedocs.io/en/latest/user-guide.html
 
-#TODO move TIME_ZONE to main user attribute? to ClockifyClient
-#TODO get the TimeZone from Google Spreadshhet settings?
-TIME_ZONE = tz.tzoffset('MSK', 10800)  # ('Europe/Moscow') https://www.epochconverter.com/timezones
-
-#TODO move to utils
-def week_start_end_datetime(week_number, year=date.today().year):
-    if week_number > 55 or week_number <= 0:
-        raise Exception("недель то всего 54")
-    else:
-        start_date = date.fromisocalendar(year, week_number, 1)
-        end_date = date.fromisocalendar(year, week_number, 7)
-        start_datetime = datetime.combine(start_date, datetime.min.time(), tzinfo=TIME_ZONE)
-        end_datetime = datetime.combine(end_date, datetime.max.time(), tzinfo=TIME_ZONE)
-        return start_datetime, end_datetime
-
-#TODO Rewrite program to remove this function
-def comparison_with_none(first, second) -> 'Boolean':
-    return first == second
-
-#TODO move to utils
-def format_timedelta(td) -> str:
-    minutes, seconds = divmod(td.seconds + td.days * 86400, 60)
-    hours, minutes = divmod(minutes, 60)
-    return '{:d}:{:02d}'.format(hours, minutes)
-
-#SETUP
-CLOCKIFY_SETUP_FILE = os.path.abspath('../res/report_setup.json')
-
-with open(CLOCKIFY_SETUP_FILE, 'r', encoding='utf-8') as task:
-    setup_dict = json.load(task)
-
-api_key = setup_dict['api_key']
-url = "https://api.clockify.me/api/v1/"
-api_session = APISession(APIServer(url), api_key)
-WORKSPACE = [ws for ws in api_session.get_workspaces() if ws.name == setup_dict['workspace_name']][0]
-
-CREDENTIALS_FILE = os.path.abspath('../res/' + setup_dict['google_credentials_file'])  # имя файла с закрытым ключом
-REPORT_SPREADSHEET_ID = setup_dict['report_spreadsheet_id']
-REPORT_SHEET_ID = setup_dict['report_sheet_id']
-#END SETUP
-
-print("================START===================")
-client = pygsheets.authorize(service_file=CREDENTIALS_FILE)
-
-# Open the spreadsheet and the first sheet.
-sh = client.open_by_key(REPORT_SPREADSHEET_ID)
-wks = sh.worksheet('id', REPORT_SHEET_ID)
-#TODO Refactor line and file formatting
-wks.update_value('D1', date.today().year)
-PROJECT_COLUMN = 'A'
-TASK_COLUMN = 'B'
-week_hours_column = 'E'
-week_money_column = 'F'
-DATA_LINE = 4
-model_cell = pygsheets.Cell("A1")
-# Collect data from Clockify
-weeks_in_RP = [9]
-week = weeks_in_RP[0]
-month = date.fromisocalendar(date.today().year, week, 1).month
-wks.update_value('E1', calendar.month_name[month])
-wks.update_value('E2', week)
-projects_with_tasks = api_session.get_projects_with_tasks(workspace=WORKSPACE)
-users = api_session.get_users(workspace=WORKSPACE)
-
-cell = wks.cell('A1')
-cell.set_text_format('bold', True)
-start, end = week_start_end_datetime(week)
-time_entries = []
-for user in users:
-    time_entries += api_session.get_time_entries(WORKSPACE, user, start, end)
-curr_line = DATA_LINE
+# from test_tr import *
+from trsetup import *
+from trutils import week_start_end_datetime, format_timedelta_hhmm
 
 
+# TODO doc the func
+def profile(fnc):
+    """A decorator that used cProfile to profile a function"""
+
+    def inner(*args, **kwargs):
+        pr = cProfile.Profile()
+        pr.enable()
+        retval = fnc(*args, **kwargs)
+        pr.disable()
+        s = io.StringIO()
+        sortby = 'cumulative'
+        ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+        ps.print_stats()
+        logger.info(s.getvalue())
+        return retval
+
+    return inner
 
 
-wks.unlink()
-print("Total time entries: ", len(time_entries))
+@profile
+def main_work():
+    logger.add("mylog.log", rotation="5 MB")
+    logger.debug("================START===================")
+    client = pygsheets.authorize(service_file=CREDENTIALS_FILE)
 
+    # Open the spreadsheet and the first sheet.
+    sh = client.open_by_key(REPORT_SPREADSHEET_ID)
+    wks = sh.worksheet('id', REPORT_SHEET_ID)
+    # TODO Refactor line and file formatting
+    wks.update_value('D1', date.today().year)
+    TASK_COLUMN = 'B'
+    week_hours_column = 'E'
+    # TODO move next column
+    month_sunday = None
 
-myranges=[]
+    # Collect data from Clockify
+    projects_with_tasks = api_session.get_projects_with_tasks(workspace=WORKSPACE)
+    users = api_session.get_users(workspace=WORKSPACE)
 
-for project in [*projects_with_tasks]:
-    proj_line = curr_line
-    wks.update_value(PROJECT_COLUMN + str(curr_line), project.name if project else "No Project")
-    curr_line += 1
-    proj_timedelta, proj_amount = timedelta(minutes=0), 0
+    # TODO change using yield
+    time_entries = []
+    curr_line = DATA_LINE - 1
 
-    for task in projects_with_tasks[project] if project else [None]:
-        wks.update_value(TASK_COLUMN + str(curr_line), task.name if task else "No Task")
-        task_time_entries = [time_entry for time_entry in time_entries
-                             if comparison_with_none(time_entry.project, project) and
-                             comparison_with_none(time_entry.task, task)]
-        elapsed_timedelta = sum([time_entry.end - time_entry.start for time_entry in task_time_entries], timedelta())
+    myranges = []
+    report_dict = {}
 
-        if elapsed_timedelta > timedelta(minutes=1):
-            #TODO measure time for that operation
-            api_session.api.substitute_api_id_entities(task_time_entries, users, projects_with_tasks)
-            elapsed_amount = sum([(time_entry.end - time_entry.start).seconds / 3600 *
-                                  time_entry.project.get_hourly_rate(WORKSPACE, time_entry.user).amount
-                                  for time_entry in task_time_entries])
-        else:
-            elapsed_amount = 0
-        wks.update_value(week_hours_column + str(curr_line), format_timedelta(elapsed_timedelta))
-        wks.update_value("F" + str(curr_line), elapsed_amount)
-        proj_timedelta = proj_timedelta + elapsed_timedelta
-        proj_amount += elapsed_amount
+    # loop for headers
+    for project in [*projects_with_tasks]:
         curr_line += 1
-#formatting
-    project_range = wks.range('A1:D5')
-    print(type(wks))
-    assert type(project_range) == bool
-    #project_range = wks.range(week_hours_column + str(proj_line) + ":" + week_money_column + str(proj_line))
-    #TODO Refactor using Lambda or map or generator
-    #make_bold = lambda cell: (cell.text_format['bold']:= True)
-    #map(make_bold, project_range.cells)
-    #for cell in project_range:
-    #    cell.text_format['bold'] = True
-    model_cell.set_text_format('bold', True)
-    left_corner_cell = PROJECT_COLUMN + str(proj_line)
-    right_corner_cell = week_money_column + str(proj_line)
-    myrange = pygsheets.DataRange(
-        left_corner_cell, right_corner_cell, worksheet=wks
-    )
-    myranges.append(myrange)
+        report_dict.update({project: []})
+        report_dict[project] += [project.name if project else "No Project", '', '', '']
+        proj_line = curr_line
+        for task in projects_with_tasks[project] if project else [None]:
+            curr_line += 1
+            report_dict.update({(project, task): []})
+            report_dict[(project, task)] += ['', task.name if task else "No Task", '', '']
+        # proj_line = curr_line
+        # TODO refactor 4 to some constant
+        # myrange = DataRange(left_corner_cell.address, right_corner_cell.address, worksheet=wks)
+        myrange = DataRange((proj_line, PROJECT_COLUMN), (curr_line, 4),
+                            worksheet=wks).update_borders(True, True, True, True, style='SOLID_THICK')
+        # myranges.append(myrange)
+    week_column = 5 - 2
+    # loop for weeks
+    for week in weeks_in_RP:
+        start, end = week_start_end_datetime(week)
+        time_entries = []
+        for user in users:
+            time_entries += api_session.get_time_entries(WORKSPACE, user, start, end)
+        week_column += 2
+        # вернуть дату, соответствующую календарной дате ISO, указанной по году, неделе и дню
+        month_monday = date.fromisocalendar(date.today().year, week, 1).month
+        if month_sunday != month_monday:
+            wks.update_value((1, week_column), calendar.month_name[month_monday])
+        month_sunday = date.fromisocalendar(date.today().year, week, 7).month
+        if month_monday != month_sunday:
+            wks.update_value((1, week_column + 1), calendar.month_name[month_sunday])
+
+        # TODO later month border
+        wks.update_value((2, week_column), week)
+
+        for project in [*projects_with_tasks]:
+            proj_timedelta, proj_amount = timedelta(minutes=0), 0
+            for task in projects_with_tasks[project] if project else [None]:
+                task_time_entries = [time_entry for time_entry in time_entries
+                                     if (time_entry.project == project) and (
+                                         time_entry.task == task)]  # remove extra cond with project
+                elapsed_timedelta = sum([time_entry.end - time_entry.start for time_entry in task_time_entries],
+                                        timedelta())
+
+                if elapsed_timedelta > timedelta(minutes=1):
+                    # TODO measure time for that operation
+                    task_time_entries = api_session.api.substitute_api_id_entities(task_time_entries, users,
+                                                                                   projects_with_tasks)
+                    # TODO don't forget about time_entries with 24h and more
+                    elapsed_amount = sum([(time_entry.end - time_entry.start).seconds / 3600 *
+                                          time_entry.user.get_hourly_rate(WORKSPACE, time_entry.user).amount
+                                          for time_entry in task_time_entries])
+
+                    # TODO keep in mind currency
+                else:
+                    elapsed_amount = 0
+
+                report_dict[(project, task)] += [format_timedelta_hhmm(elapsed_timedelta), elapsed_amount]
+                proj_timedelta += elapsed_timedelta
+                proj_amount += elapsed_amount
+
+            # TODO Refactor using Lambda or map or generator
+            # model_cell.set_text_format('bold', True)
+
+            report_dict[project] += [format_timedelta_hhmm(proj_timedelta), proj_amount]
+            proj_none = [*projects_with_tasks][0]
+            task_none = projects_with_tasks[[proj_none][0]][0]
+            assert report_dict[proj_none] == report_dict[task_none]
+            special_list = []
+            for x in projects_with_tasks.keys():
+                special_list += [x]
+                special_list += [(x, t) for t in projects_with_tasks[x]]
+            logger.info('speciallist: ', len(special_list))
+
+    # Памятка
+    # A4 = (1,4) = (DATA_LINE, PROJECT_COLUMN)
+    # A6 = (1,6) = (proj_line, PROJECT_COLUMN)
+    logger.info(curr_line)
+    model_range = DataRange((DATA_LINE, PROJECT_COLUMN), (curr_line, week_column + 1), wks)
+    logger.info(model_range.range)
+    model_range.update_values([report_dict[x] for x in special_list])
+    wks.sync()
+    logger.warning("==================END=====================")
 
 
-
-    wks.update_value(week_hours_column + str(proj_line), format_timedelta(proj_timedelta))
-    wks.update_value(week_money_column + str(proj_line), elapsed_amount)
-
-wks.link()
-for my_range in myranges:
-    my_range.apply_format(model_cell)
-    my_range.update_borders(True, True, True, True, style='SOLID_THICK')
-print("==================END=====================")
+main_work()

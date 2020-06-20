@@ -5,7 +5,7 @@ import io
 import pstats
 from datetime import *
 import pygsheets
-from pygsheets import DataRange
+from pygsheets import DataRange, Cell, Worksheet
 from loguru import logger  # https://gspread.readthedocs.io/en/latest/user-guide.html
 
 # from test_tr import *
@@ -31,7 +31,16 @@ def profile(fnc):
 
     return inner
 
+def model_cell(wks: Worksheet, index: str) -> Cell:
+    '''???'''
+    cell = Cell(index)
+    wks.unlink()
+    cell.text_format['fontSize'] = 10
+    cell.text_format['bold'] = True
+    wks.link()
+    return cell
 
+#TODO Add a feature to make a copy of predesigned list
 @profile
 def main_work():
     logger.add("mylog.log", rotation="5 MB")
@@ -43,38 +52,35 @@ def main_work():
     wks = sh.worksheet('id', REPORT_SHEET_ID)
     # TODO Refactor line and file formatting
     wks.update_value('D1', date.today().year)
-    TASK_COLUMN = 'B'
-    week_hours_column = 'E'
-    # TODO move next column
-    month_sunday = None
 
-    # Collect data from Clockify
+    # Collect general data from Clockify
     projects_with_tasks = api_session.get_projects_with_tasks(workspace=WORKSPACE)
     users = api_session.get_users(workspace=WORKSPACE)
 
     # TODO change using yield
-    time_entries = []
+    month_sunday = None
     curr_line = DATA_LINE - 1
 
-    myranges = []
+    lines_for_range_for_borders = []
     report_dict = {}
-
+    m_cell = model_cell(wks, 'A1')
     # loop for headers
+    #task1 - make report dict for headers (A:D)
+    # task2 - apply bold font for project line
+    # tasl 3 -
     for project in [*projects_with_tasks]:
         curr_line += 1
         report_dict.update({project: []})
         report_dict[project] += [project.name if project else "No Project", '', '', '']
         proj_line = curr_line
+        wks.get_row(proj_line, returnas='range').apply_format(m_cell)
         for task in projects_with_tasks[project] if project else [None]:
             curr_line += 1
             report_dict.update({(project, task): []})
             report_dict[(project, task)] += ['', task.name if task else "No Task", '', '']
-        # proj_line = curr_line
-        # TODO refactor 4 to some constant
-        # myrange = DataRange(left_corner_cell.address, right_corner_cell.address, worksheet=wks)
-        myrange = DataRange((proj_line, PROJECT_COLUMN), (curr_line, 4),
-                            worksheet=wks).update_borders(True, True, True, True, style='SOLID_THICK')
-        # myranges.append(myrange)
+        DataRange((proj_line, PROJECT_COLUMN), (curr_line, 4),
+                  worksheet=wks).update_borders(True, True, True, True, style='SOLID')
+        lines_for_range_for_borders.append((proj_line, curr_line))
     week_column = 5 - 2
     # loop for weeks
     for week in weeks_in_RP:
@@ -102,7 +108,6 @@ def main_work():
                                          time_entry.task == task)]  # remove extra cond with project
                 elapsed_timedelta = sum([time_entry.end - time_entry.start for time_entry in task_time_entries],
                                         timedelta())
-
                 if elapsed_timedelta > timedelta(minutes=1):
                     # TODO measure time for that operation
                     task_time_entries = api_session.api.substitute_api_id_entities(task_time_entries, users,
@@ -111,37 +116,31 @@ def main_work():
                     elapsed_amount = sum([(time_entry.end - time_entry.start).seconds / 3600 *
                                           time_entry.user.get_hourly_rate(WORKSPACE, time_entry.user).amount
                                           for time_entry in task_time_entries])
-
                     # TODO keep in mind currency
                 else:
                     elapsed_amount = 0
-
                 report_dict[(project, task)] += [format_timedelta_hhmm(elapsed_timedelta), elapsed_amount]
                 proj_timedelta += elapsed_timedelta
                 proj_amount += elapsed_amount
-
-            # TODO Refactor using Lambda or map or generator
-            # model_cell.set_text_format('bold', True)
-
             report_dict[project] += [format_timedelta_hhmm(proj_timedelta), proj_amount]
-            proj_none = [*projects_with_tasks][0]
-            task_none = projects_with_tasks[[proj_none][0]][0]
-            assert report_dict[proj_none] == report_dict[task_none]
+
             special_list = []
             for x in projects_with_tasks.keys():
                 special_list += [x]
                 special_list += [(x, t) for t in projects_with_tasks[x]]
             logger.info('speciallist: ', len(special_list))
-
-    # Памятка
-    # A4 = (1,4) = (DATA_LINE, PROJECT_COLUMN)
-    # A6 = (1,6) = (proj_line, PROJECT_COLUMN)
+        #borders for weeks
+        for lines in lines_for_range_for_borders:
+            DataRange((lines[0], PROJECT_COLUMN), (lines[1], week_column + 1),
+                        worksheet=wks).update_borders(True, True, True, True, style='SOLID')
     logger.info(curr_line)
-    model_range = DataRange((DATA_LINE, PROJECT_COLUMN), (curr_line, week_column + 1), wks)
-    logger.info(model_range.range)
-    model_range.update_values([report_dict[x] for x in special_list])
-    wks.sync()
+    DataRange((DATA_LINE, PROJECT_COLUMN), (curr_line, week_column + 1),
+                            wks).update_values([report_dict[x] for x in special_list])
     logger.warning("==================END=====================")
 
-
 main_work()
+
+#TODO LIST
+#* Change Logger
+#* Make profiler with total projects
+#

@@ -7,6 +7,7 @@ from dateutil import tz
 # TODO get the TimeZone from Google Spreadshhet settings?
 # Use https://developers.google.com/apps-script/reference/spreadsheet/spreadsheet#getspreadsheettimezone
 # Set special file to get this. Use credentials
+#
 TIME_ZONE = tz.tzoffset('MSK', 10800)  # ('Europe/Moscow') https://www.epochconverter.com/timezones
 
 

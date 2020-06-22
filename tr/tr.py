@@ -31,17 +31,20 @@ def profile(fnc):
 
     return inner
 
+
 def model_cell(wks: Worksheet, index: str) -> Cell:
-    '''???'''
+    '''Prepare model_cell to apply to DataRange in main program'''
     cell = Cell(index)
     wks.unlink()
-    cell.text_format['fontSize'] = 10
+    cell.text_format['fontSize'] = 11
     cell.text_format['bold'] = True
+    cell.borders = {'top': {'style': 'SOLID'}}
     wks.link()
     return cell
 
-#TODO Add a feature to make a copy of predesigned list
-@profile
+
+# TODO Add a feature to make a copy of predesigned list
+# @profile
 def main_work():
     logger.add("mylog.log", rotation="5 MB")
     logger.debug("================START===================")
@@ -58,16 +61,17 @@ def main_work():
     users = api_session.get_users(workspace=WORKSPACE)
 
     # TODO change using yield
-    month_sunday = None
+    month_sunday = None  # for month in headers
     curr_line = DATA_LINE - 1
 
     lines_for_range_for_borders = []
     report_dict = {}
     m_cell = model_cell(wks, 'A1')
     # loop for headers
-    #task1 - make report dict for headers (A:D)
-    # task2 - apply bold font for project line
-    # tasl 3 -
+    # task1 - make report dict for headers (A:D)
+    # task2 - apply bold font for project line and line above
+    # task3 - to store the upper and bottom lines for projects (without left, right) to make a range to set borders
+    # TODO refactor to eliminate task3
     for project in [*projects_with_tasks]:
         curr_line += 1
         report_dict.update({project: []})
@@ -78,18 +82,24 @@ def main_work():
             curr_line += 1
             report_dict.update({(project, task): []})
             report_dict[(project, task)] += ['', task.name if task else "No Task", '', '']
-        DataRange((proj_line, PROJECT_COLUMN), (curr_line, 4),
-                  worksheet=wks).update_borders(True, True, True, True, style='SOLID')
+        # DataRange((proj_line, PROJECT_COLUMN), (curr_line, 4),
+        #           worksheet=wks).update_borders(True, True, True, True, style='DOTTED')
         lines_for_range_for_borders.append((proj_line, curr_line))
     week_column = 5 - 2
+
     # loop for weeks
+    # task1 get time_entries for a week for each user
+    # task2 calculate overall time and amount (salary) for project/task
+
     for week in weeks_in_RP:
         start, end = week_start_end_datetime(week)
+        #TODO refactor from 1 by 1 week to 4 in 1 week
         time_entries = []
         for user in users:
             time_entries += api_session.get_time_entries(WORKSPACE, user, start, end)
         week_column += 2
-        # вернуть дату, соответствующую календарной дате ISO, указанной по году, неделе и дню
+        # Month placement
+        # TODO month border, refactoring to months line to decrease the number of requests
         month_monday = date.fromisocalendar(date.today().year, week, 1).month
         if month_sunday != month_monday:
             wks.update_value((1, week_column), calendar.month_name[month_monday])
@@ -97,7 +107,6 @@ def main_work():
         if month_monday != month_sunday:
             wks.update_value((1, week_column + 1), calendar.month_name[month_sunday])
 
-        # TODO later month border
         wks.update_value((2, week_column), week)
 
         for project in [*projects_with_tasks]:
@@ -123,24 +132,26 @@ def main_work():
                 proj_timedelta += elapsed_timedelta
                 proj_amount += elapsed_amount
             report_dict[project] += [format_timedelta_hhmm(proj_timedelta), proj_amount]
+        # borders for weeks
+        # TODO in refactoring process
+        # for lines in lines_for_range_for_borders:
+        #     DataRange((lines[0], PROJECT_COLUMN), (lines[1], week_column + 1),
+        #                 worksheet=wks).update_borders(True, True, True, True, style='SOLID')
+    special_list = []
+    for x in projects_with_tasks.keys():
+        special_list += [x]
+        special_list += [(x, t) for t in projects_with_tasks[x]]
+    logger.info('speciallist: ', len(special_list))
 
-            special_list = []
-            for x in projects_with_tasks.keys():
-                special_list += [x]
-                special_list += [(x, t) for t in projects_with_tasks[x]]
-            logger.info('speciallist: ', len(special_list))
-        #borders for weeks
-        for lines in lines_for_range_for_borders:
-            DataRange((lines[0], PROJECT_COLUMN), (lines[1], week_column + 1),
-                        worksheet=wks).update_borders(True, True, True, True, style='SOLID')
     logger.info(curr_line)
     DataRange((DATA_LINE, PROJECT_COLUMN), (curr_line, week_column + 1),
-                            wks).update_values([report_dict[x] for x in special_list])
+              wks).update_values([report_dict[x] for x in special_list])
     logger.warning("==================END=====================")
+
 
 main_work()
 
-#TODO LIST
-#* Change Logger
-#* Make profiler with total projects
+# TODO LIST
+# * Change Logger
+# * Make profiler with total projects
 #

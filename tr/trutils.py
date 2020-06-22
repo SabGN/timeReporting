@@ -5,6 +5,8 @@ from dateutil import tz
 
 # TODO move TIME_ZONE to main user attribute? to ClockifyClient
 # TODO get the TimeZone from Google Spreadshhet settings?
+# Use https://developers.google.com/apps-script/reference/spreadsheet/spreadsheet#getspreadsheettimezone
+# Set special file to get this. Use credentials
 TIME_ZONE = tz.tzoffset('MSK', 10800)  # ('Europe/Moscow') https://www.epochconverter.com/timezones
 
 
@@ -21,7 +23,6 @@ def week_start_end_datetime(week_number, year=date.today().year):
         raise DateOutOfRangeException('Year must from 1 to 9999, but', year)
     d = "%04d" % (year,) + '-W' + str(week_number)
     tdelta = datetime.timedelta(days=7, microseconds=-1)
-    print(type(d), d)
     start_datetime = datetime.datetime.strptime(d + '-1', '%G-W%V-%u')
     end_datetime = start_datetime + tdelta
     week_number = datetime.date.isocalendar(end_datetime)
